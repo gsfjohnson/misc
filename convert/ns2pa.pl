@@ -127,7 +127,9 @@ do {
 
 				if ( $hr->{'protocol'} && $prot ne $hr->{'protocol'} )
 				{
-					DEBUG_ "S[". $name ."]: New protocol [". $prot ."] overwriting [". $hr->{'protocol'} ."]";
+					my $err = "ERR: new protocol [". $prot ."] overwriting [". $hr->{'protocol'} ."]";
+					DEBUG_ "S[". $name ."]: ". $err;
+					$hr->{error} = pushError( $hr->{error}, $err );
 					$hr->{'protocol'} = $prot;
 				}
 				else
@@ -135,41 +137,49 @@ do {
 					$hr->{'protocol'} = $prot;
 				}
 
+				# source port
+				my $n = 'srcport';
 				if ( $srcport ne '0-65535' && $srcport ne '1-65535' )
 				{
-					if ( $hr->{'srcport'} )
+					if ( $hr->{$n} )
 					{
-						$hr->{'srcport'} .= ','.$srcport;
+						$hr->{$n} .= ','.$srcport
+							if index($hr->{$n},$2) == -1
 					}
 					else
 					{
-						$hr->{'srcport'} = $srcport;
+						$hr->{$n} = $srcport;
 					}
 				}
 
+				# dest port
+				$n = 'dstport';
 				if ( $dstport =~ /(\d+)-(\d+)/ )
 				{
 					$dstport = $1 if ( $1 eq $2 ); 
 				}
 
-				if ( $hr->{'dstport'} )
+				if ( $hr->{$n} )
 				{
-					$hr->{'dstport'} .= ','.$dstport;
+					$hr->{$n} .= ','.$dstport
+							if index($hr->{$n},$2) == -1
 				}
 				else
 				{
-					$hr->{'dstport'} = $dstport;
+					$hr->{$n} = $dstport;
 				}
 
+				DEBUG_ "S[". $name ."]: protocol[". $hr->{protocol} ."] srcport[". $hr->{srcport} ."] dstport[". $hr->{dstport} ."]";
 			}
 			elsif ( $extra =~ /timeout (\d+)/ )
 			{
 				if ( $1 == 350 )
 				{
-					DEBUG_ "S[$name] default timeout: ". $1;
+					# nothing
 				}
 				else
 				{
+					DEBUG_ "S[$name] non-default timeout: ". $1;
 					$hr->{'timeout'} = $1
 				}
 
@@ -205,7 +215,7 @@ do {
 			{
 				# check for exist
 				my $f = findSvcOrGroup($val);
-				DEBUG_ 'SG['. $name .']+ "'. $val .'"'. ( $f ? '' : ' -DNE-' );
+				DEBUG_ 'SG['. $name .']+ "'. $val .'"'. ( $f ? '' : ' -ERR:DNE-' );
 				$hr->{error} = 'service['. $val .'] does not exist' if ! $f;
 
 				# check for rename
@@ -285,22 +295,35 @@ do {
 				unless $hrAddr->{$name} && ref($hrAddr->{$name}) eq 'HASH';
 			my $hr = $hrAddr->{$name};
 
+			# description
 			if ( length($desc) && $hr->{'description'} && $desc ne $hr->{'description'} )
 			{
-				DEBUG_ "A[". $name ."]: New description [". $desc ."] overwriting [". $hr->{'description'} ."]";
+				my $err = "New description [". $desc ."] overwriting [". $hr->{'description'} ."]";
+				DEBUG_ "A[". $name ."]: ". $err;
+				$hr->{error} = pushError( $hr->{error}, $err );
 			}
 			$hr->{'description'} = $desc if length($desc);
+
+			# zone
 			if ( index($hr->{'tag'}, $zone) == -1 )
 			{
-				$hr->{'tag'} .= "|".$zone;
+				my $err = "already exists, adding zone [". $zone ."] to list [". $hr->{tag} ."]";
+				DEBUG_ "A[". $name ."]: ". $err;
+
+				$hr->{tag} .= "|".$zone;
 			}
+
+			# address
 			my $newaddr = $addr .( $p ? '/'.$p : '' );
 			if ( $hr->{'addr'} && $newaddr ne $hr->{'addr'} )
 			{
-				DEBUG_ "A[". $name ."]: New addr [". $newaddr ."] overwriting old addr [". $hr->{'addr'} ."]";
+				my $err = "New addr [". $newaddr ."] overwriting old addr [". $hr->{'addr'} ."]";
+				DEBUG_ "A[". $name ."]: ". $err;
+				$hr->{error} = pushError( $hr->{error}, $err );
 			}
 			$hr->{'addr'} = $newaddr;
 
+			# debug
 			DEBUG_ "A[". $name ."]+ ". $newaddr;
 		}
 		else
@@ -323,7 +346,7 @@ do {
 			{
 				if ( index($hrAddrGroup->{$name}->{'tag'},$zone) == -1 )
 				{
-					DEBUG_ "AG[". $name ."]: New address-group [". $name ."] already exists in zones [". $hrAddrGroup->{$name}->{'tag'} ."]";
+					DEBUG_ "AG[". $name ."]: NOTE: new address-group [". $name ."] already exists in zones [". $hrAddrGroup->{$name}->{'tag'} ."]";
 					$hrAddrGroup->{$name}->{'tag'} .= '|'.$zone;
 				}
 			}
@@ -360,6 +383,8 @@ do {
 	elsif ( $state eq 'policy' || ( ! $state && $line =~ /^set policy / ) )
 	{
 		my $hr = undef;
+		$hr = $hrPolicy->{$id} if $state eq 'policy' && $id;
+
 		if ( $line =~ /^set policy (global id|id) (\d+) from "([^"]+)" to "([^"]+)"  "([^"]+)" "([^"]+)" "([^"]+)" (permit|reject)( log|)/ )
 		{
 			$state = 'policy'; # force return
@@ -376,7 +401,7 @@ do {
 			$hrPolicy->{$id} = $hr;
 			push @arrPolicy, $id; # ensure order
 
-			DEBUG_ 'P['. $id .']: '. $hr->{action} .' '. $hr->{srcaddr} .'['. $hr->{srczone} .'] -> '. $hr->{dstaddr} .'['. $hr->{dstzone} .'] : '. $hr->{svc} .( findSvcOrGroup($hr->{svc}) ? '' : ' -DNE-' );
+			DEBUG_ 'P['. $id .']: '. $hr->{action} .' '. $hr->{srcaddr} .'['. $hr->{srczone} .'] -> '. $hr->{dstaddr} .'['. $hr->{dstzone} .'] : '. $hr->{svc} .( findSvcOrGroup($hr->{svc}) ? '' : ' -ERR:DNE-' );
 
 			# check for rename
 			my $newname = renameSvc($hr->{svc});
@@ -388,31 +413,41 @@ do {
 		}
 		elsif ( $line =~ /^set policy id (\d+)( disable|)$/ )
 		{
-			DEBUG_ 'P['. $id .']: different id '. $1
+			DEBUG_ 'P['. $id .']: different id '. $1 .'(ignoring)'
 				if $id != $1;
-			$hrPolicy->{$id}->{'disabled'} = 'yes'
-				if $2 eq ' disable';
-			DEBUG_ 'P['. $id ."]: disabled"
-				if $2 eq ' disable';
-
+			if ($2 eq ' disable')
+			{
+				DEBUG_ 'P['. $id ."]: disabled";
+				$hr->{'disabled'} = 'yes';
+			}
 		}
 		elsif ( $line =~ /^set service "([^"]+)"$/ )
 		{
-			DEBUG_ 'P['. $id .']: addl svc '. $1 .( findSvcOrGroup($1) ? '' : ' -DNE-' ) . ( findSvcOrGroup($1) && renameSvc($1) ne $1 ? ' renamed to '. renameSvc($1) : '' );
-			$hrPolicy->{$id}->{'svc'} .= '|'. renameSvc($1)
-				if ( index($hrPolicy->{$id}->{'svc'},$1) == -1 );
+			my $f = findSvcOrGroup($1);
+			DEBUG_ 'P['. $id .']: addl svc '. $1 .( $f ? '' : ' -ERR:DNE-' ) . ( $f && renameSvc($1) ne $1 ? ' renamed to '. renameSvc($1) : '' );
+			if ( $f )
+			{
+				$hr->{svc} .= '|'. renameSvc($1)
+					if index($hr->{svc},$1) == -1;
+			}
+			else
+			{
+				$hr->{error} = pushError( $hr->{error}, 'ERR: svc['. $1 .'] not found' );
+			}
 		}
-		elsif ( $line =~ /^set src-address "([^"]+)"$/ )
+		elsif ( $line =~ /^set (src|dst)-address "([^"]+)"$/ )
 		{
-			DEBUG_ 'P['. $id ."]: addl srcaddr: ". $1;
-			$hrPolicy->{$id}->{'srcaddr'} .= '|'. $1
-				if ( index($hrPolicy->{$id}->{'srcaddr'},$1) == -1 );
-		}
-		elsif ( $line =~ /^set dst-address "([^"]+)"$/ )
-		{
-			DEBUG_ 'P['. $id ."]: addl dstaddr: ". $1;
-			$hrPolicy->{$id}->{'dstaddr'} .= '|'. $1
-				if ( index($hrPolicy->{$id}->{'dstaddr'},$1) == -1 );
+			my $f = findAddrOrGroup($2); my $n = $1.'addr';
+			DEBUG_ 'P['. $id ."]: addl ". $1 ."-address: ". $2 .( $f ? '' : ' -ERR:DNE-' );
+			if ( $f )
+			{
+				$hr->{$n} .= '|'. $2
+					if index($hr->{$n},$2) == -1;
+			}
+			else
+			{
+				$hr->{error} = pushError( $hr->{error}, 'ERR: address or address-group ['. $1 .'] not found' );
+			}
 		}
 		elsif ( $line =~ /^set log (session-init)$/ )
 		{
@@ -499,23 +534,23 @@ do {
 			$n = 'srcaddr'; $f = findAddrOrGroup($hr->{$n});
 			unless ( $f )
 			{
-				my $err = $n.'['. $hr->{$n} .'] not found';
+				my $err = 'ERR: '.$n.'['. $hr->{$n} .'] not found';
 				DEBUG_ 'P['. $id .']: '. $err;
-				$hr->{error} = ( $hr->{error} ? $hr->{error}.'|' : '' ). $err;
+				$hr->{error} = pushError( $hr->{error}, $err );
 			}
 			$n = 'dstaddr'; $f = findAddrOrGroup($hr->{$n});
 			unless ( $f )
 			{
-				my $err = $n.'['. $hr->{$n} .'] not found';
+				my $err = 'ERR: '.$n.'['. $hr->{$n} .'] not found';
 				DEBUG_ 'P['. $id .']: '. $err;
-				$hr->{error} = ( $hr->{error} ? $hr->{error}.'|' : '' ). $err;
+				$hr->{error} = pushError( $hr->{error}, $err );
 			}
 			$n = 'svc'; $f = findSvcOrGroup($hr->{$n});
 			unless ( $f )
 			{
-				my $err = $n.'['. $hr->{$n} .'] not found';
+				my $err = 'ERR: '.$n.'['. $hr->{$n} .'] not found';
 				DEBUG_ 'P['. $id .']: '. $err;
-				$hr->{error} = ( $hr->{error} ? $hr->{error}.'|' : '' ). $err;
+				$hr->{error} = pushError( $hr->{error}, $err );
 			}
 
 			DEBUG_ 'P['. $id .']: '. $hr->{action} .' '. $hr->{srcaddr} .'['. $hr->{srczone} .'] -> '. $hr->{dstaddr} .'['. $hr->{dstzone} .'] : '. $hr->{svc};
@@ -697,4 +732,12 @@ sub formatErrors
 	
 	return "\n# ". join("\n# ",split(/\|/,$err)) ."\n# " if $err;
 	return '';
+}
+
+sub pushError
+{
+	my $str = shift;
+	my $err = shift;
+
+	return ( length($str) ? '|' : '' ). $err;
 }
