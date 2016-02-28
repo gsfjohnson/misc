@@ -2,11 +2,16 @@
 
 use XML::LibXML;
 use URI::URL;
+use JSON;
 
 $debug = 1;
 sub DEBUG { return unless $debug; my $m = shift @_; print STDERR "$m\n"; }
 
 my $arrProd = [];
+my $arrCats = [];
+my $arrSubCats = [];
+my $apiurl = undef;
+$apiurl = $ARGV[2] if $ARGV[1] == 'api';
 
 #
 # get pages
@@ -22,31 +27,31 @@ for (my $p=0; $p < scalar @$arrPages; $p++ )
   my $localfile;
   my $debugout = '';
   my $hrPage = $arrPages->[$p];
-  
+
   # count
   $debugout .= "(". $p ."/". @$arrPages .")";
-  
+
   # type
   if ( $hrPage->{'type'} )
   {
     $type = $hrPage->{'type'};
     $debugout .= " [". $type ."]";
   }
-  
+
   # localfile
   if ( $hrPage->{'localfile'} )
   {
     $localfile = $hrPage->{'localfile'};
     $debugout .= " <". $localfile .">";
   }
-  
+
   # url
   if ( $hrPage->{'url'} )
   {
     $url = $hrPage->{'url'};
     $debugout .= " ". $url;
   }
-  
+
   # unless local file exists
   unless ( -r $localfile )
   {
@@ -54,7 +59,7 @@ for (my $p=0; $p < scalar @$arrPages; $p++ )
     my $result = `curl --silent "$url" -o $localfile`;
     $debugout .= " {". $result ."}" if length($result) > 0;
   }
-  
+
   # unless image
   unless ( $type eq 'image' )
   {
@@ -65,52 +70,87 @@ for (my $p=0; $p < scalar @$arrPages; $p++ )
         or die "could not open $localfile: $!";
       <$fh>;
     };
-    parseCategoryPages($html, $arrPages) if $type eq 'department';
-    parseSubCategoryPages($html, $arrPages) if $type eq 'subcategory';
-    parseSubCategory2Pages($html, $arrPages, $arrProd, $p) if $type eq 'subcategory2';
+    $arrCats = parseCategorylist($html, $arrPages) if $type eq 'department';
+    parseSubCategorylist($html, $arrPages) if $type eq 'subcategory';
+    parseItemlist($html, $arrPages, $arrProd, $p) if $type eq 'subcategory2';
   }
-  
+
   # debug
   DEBUG $debugout;
   $debugout = '';
 }
 
-my @arrKeys = (
-   'id'
-  ,'category_id'
-  ,'category'
-  ,'subcategory_id'
-  ,'subcategory'
-  ,'brand'
-  ,'product'
-  ,'size'
-  ,'upc'
-  ,'price'
-  ,'url'
-  ,'imgurl');
-
-# tsv head
-foreach my $key (@arrKeys) { print $key ."\t"; }
-print "\n";
-
-# tsv data
-foreach my $arr (@$arrProd)
-{
-  foreach my $key (@arrKeys) { print $arr->{$key} ."\t"; }
-  print "\n";
-}
-
+exportTSV() if $ARGV[1] == 'tsv';
+#exportAPI($ARGV[2]) if $ARGV[1] == 'api';
 exit;
 
 
 #
+# export in TSV format
+#
+sub exportTSV {
+  my @arrKeys = (
+     'id'
+    ,'category_id'
+    ,'category'
+    ,'subcategory_id'
+    ,'subcategory'
+    ,'brand'
+    ,'product'
+    ,'size'
+    ,'upc'
+    ,'price'
+    ,'url'
+    ,'imgurl');
+
+  # tsv head
+  foreach my $key (@arrKeys) { print $key ."\t"; }
+  print "\n";
+
+  # tsv data
+  foreach my $arr (@$arrProd)
+  {
+    foreach my $key (@arrKeys) { print $arr->{$key} ."\t"; }
+    print "\n";
+  }
+}
+
+#
+# export to API
+#
+sub exportAPI {
+
+  my @arrKeys = (
+     'id'
+    ,'category_id'
+    ,'category'
+    ,'subcategory_id'
+    ,'subcategory'
+    ,'brand'
+    ,'product'
+    ,'size'
+    ,'upc'
+    ,'price'
+    ,'url'
+    ,'imgurl');
+
+  # tsv data
+  foreach my $arr (@$arrProd)
+  {
+    foreach my $key (@arrKeys) { print $arr->{$key} ."\t"; }
+    print "\n";
+  }
+
+}
+
+#
 # parse categories
 #
-sub parseCategoryPages {
+sub parseCategorylist {
   my $html = shift(@_);
   my $arrPages = shift(@_);
   my $p = scalar @$arrPages;
-  my $arCats = [];
+  my $arrCats = [];
   @html = split("\n", $html);
   my $i = 0;
   DEBUG "parseCategories()...";
@@ -140,19 +180,36 @@ sub parseCategoryPages {
           ,'localfile' => $hr->{'type'} ."_". $id .".html"
         };
         DEBUG "parsed $i ; type = ". $hr->{'type'} ." ; url = ". $hr->{'url'};
-        $arCats->[$i++] = $hr;
-      }
-    }
-  }
- return $arCats;
-}
+        $arrCats->[$i++] = $hr;
 
+        # push into api
+        if ($apiurl)
+        {
+          my $jsonhr = {
+            'id' => $hr->{'category_id'}
+            ,'name' => $hr->{'category'}
+          };
+          my $json_text = encode_json $jsonhr;
+          my $command = 'curl --silent --header "Content-Type:application/json" -XPOST "'. $apiurl .'/Category/create" -d '. "'". $json_text ."'";
+          DEBUG "posting to API: ". $command;
+          my $result = `$command`;
+          print $result if length $result;
+        }
+
+      } #hr->{type}
+
+    } # if ( $_ =~ /href='([^']+)'>([^<]+)\</ )
+
+  } # foreach
+
+ return $arrCats;
+}
 
 
 #
 # parse subcategory
 #
-sub parseSubCategoryPages {
+sub parseSubCategorylist {
   my $html = shift(@_);
   my $arrPages = shift(@_);
   my $p = scalar @$arrPages;
@@ -173,7 +230,7 @@ sub parseSubCategoryPages {
       my $hr = {};
       $hr->{'url'} = $ARGV[0] . $1;
       $hr->{'url'} =~ s/\&amp;/\&/g;
-      
+
       # process url keys and values
       my $url = url $hr->{'url'};
       DEBUG $bump."url: ". $hr->{'url'};
@@ -207,7 +264,24 @@ sub parseSubCategoryPages {
         };
       }
       $arSubCats->[$i++] = $hr;
-    }
+
+      # push into api
+      if ($apiurl)
+      {
+        my $jsonhr = {
+          'id' => $hr->{'subcategory_id'}
+          ,'parent' => $hr->{'category_id'}
+          ,'name' => $hr->{'subcategory'}
+        };
+        my $json_text = encode_json $jsonhr;
+        my $command = 'curl --silent --header "Content-Type:application/json" -XPOST "'. $apiurl .'/Category/create" -d '. "'". $json_text ."'";
+        DEBUG "posting to API: ". $command;
+        my $result = `$command`;
+        print $result if length $result;
+      }
+
+    } # if ( $context =~ /href="([^"]+)">(.+)<\/a>/ )
+
   }
 
   return $arSubCats;
@@ -216,7 +290,7 @@ sub parseSubCategoryPages {
 #
 # parse subcategory2
 #
-sub parseSubCategory2Pages {
+sub parseItemlist {
   my $html = shift(@_);
   my $arrPages = shift(@_);
   my $p = scalar @$arrPages;
@@ -237,9 +311,7 @@ sub parseSubCategory2Pages {
   my $results = $dom->findnodes('//div[@id="midCol"]/table[1]/tr[3]/td[2]/table/tr/td[@valign="top" or @valign="bottom"]');
   foreach my $context ($results->get_nodelist)
   {
-    # --- <td valign="top"><a class="ProductBrowse" href="/shop/product_view.asp?id=156377&amp;StoreID=D92VLAQVMPDL9L5UHTS2WLU67NADEHUA&amp;private_product=0"><b>WiseWays Herbals</b></a><br/><a class="ProductBrowse" href="/shop/product_view.asp?id=156377&amp;StoreID=D92VLAQVMPDL9L5UHTS2WLU67NADEHUA&amp;private_product=0">Bamboo Scents - 17 Reeds, 1 oz. Aromatic Oil</a></td>
-    # --- <td valign="top"><br/><a class="ProductBrowse" href="/shop/product_view.asp?id=156377&amp;StoreID=D92VLAQVMPDL9L5UHTS2WLU67NADEHUA&amp;private_product=0"/></td>
-    # --- <td valign="top" align="right"><br/>$8.00</td>
+
     DEBUG "--- ". $context;
     if ( $context =~ /<img src="([^"]+)".+alt="([\d]+)"\/>/ )
     {
@@ -251,7 +323,7 @@ sub parseSubCategory2Pages {
       # post process imgurl
       $hr->{'imgurl'} = $ARGV[0] . $hr->{'imgurl'} unless $hr->{'imgurl'} =~ /^http/;
 
-      # add to pages for download      
+      # add to pages for download
       DEBUG "+++ [image] ". $hr->{'imgurl'};
       $arrPages->[$p++] = {
          'url' => $hr->{'imgurl'}
@@ -259,6 +331,12 @@ sub parseSubCategory2Pages {
         ,'localfile' => substr($hr->{'imgurl'}, rindex($hr->{'imgurl'}, '/') + 1)
       } if index $hr->{'imgurl'}, $ARGV[0] > -1;
     }
+
+    # --- <td valign="top"><a class="ProductBrowse" href="/shop/product_view.asp?id=156377&amp;StoreID=D92VLAQVMPDL9L5UHTS2WLU67NADEHUA&amp;private_product=0">
+    # <b>WiseWays Herbals</b></a><br/>
+    # <a class="ProductBrowse" href="/shop/product_view.asp?id=156377&amp;StoreID=D92VLAQVMPDL9L5UHTS2WLU67NADEHUA&amp;private_product=0">
+    # Bamboo Scents - 17 Reeds, 1 oz. Aromatic Oil
+    # </a></td>
     elsif ( $context =~ /<a class="ProductBrowse" href="([^"]+)"><b>([^<]+)<\/b><\/a><br\/><a class="ProductBrowse" href="([^"]+)">([^<]+)<\/a>/ )
     {
       DEBUG $bump."url: $1";
@@ -268,7 +346,7 @@ sub parseSubCategory2Pages {
       $hr->{'brand'} = $2;
       $hr->{'product'} = $4;
       $hr->{'url'} =~ s/\&amp;/\&/g;
-      
+
       # process url query keys and values
       my $url = url $hr->{'url'};
       DEBUG $bump."url: ". $hr->{'url'};
@@ -285,24 +363,49 @@ sub parseSubCategory2Pages {
         $hr->{$key} = $hrPage->{$key};
       }
     }
+
+    # --- <td valign="top"><br/><a class="ProductBrowse" href="/shop/product_view.asp?id=156377&amp;StoreID=D92VLAQVMPDL9L5UHTS2WLU67NADEHUA&amp;private_product=0"/></td>
     elsif ( $context =~ /<br\/><a class="ProductBrowse" href="([^"]+)">([^<]+)<\/a>/ )
     {
       DEBUG $bump."url: $1";
       DEBUG $bump."size: $2";
       $hr->{'size'} = $2;
     }
+
+    # --- <td valign="top" align="right"><br/>$8.00</td>
     elsif ( $context =~ /(\$[\d]+\.[\d]{2})/ )
     {
       $hr->{'price'} = $1;
-      
+
       # debug
       foreach my $key ( keys %$hr )
       {
         DEBUG $bump."$key: $hr->{$key}";
       }
 
-      # close out hashref
+      # save hashref
       $arrProd->[$n] = $hr;
+
+      # push into api
+      if ($apiurl)
+      {
+        my $jsonhr = {
+          'id' => $hr->{'id'}
+          ,'categories' => [ int($hr->{'category_id'}) ]
+          ,'name' => $hr->{'product'}
+          ,'description' => $hr->{'size'}
+          ,'price' => $hr->{'price'}
+        };
+        $jsonhr->{'upc'} = $hr->{'upc'} if length($hr->{'upc'}) == 12;
+        $jsonhr->{'price'} =~ s/^\$//; # remove dollar sign
+        my $json_text = encode_json $jsonhr;
+        my $command = 'curl --silent --header "Content-Type:application/json" -XPOST "'. $apiurl .'/Product/create" -d '. "'". $json_text ."'";
+        DEBUG "posting to API: ". $command;
+        my $result = `$command`;
+        print $result if length $result;
+      }
+
+      # close out hashref
       $hr = {};
 
       # next position
